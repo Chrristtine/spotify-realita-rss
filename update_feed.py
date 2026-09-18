@@ -1,27 +1,33 @@
 import os
 import html
 import requests
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from email.utils import format_datetime
 from xml.etree.ElementTree import Element, SubElement, ElementTree
-
 
 ARTIST_ID = "56DyVeJDf5P6envEFo6s7X"
 ARTIST_URL = f"https://open.spotify.com/artist/{ARTIST_ID}"
 
-# Discord role Fanoušci 🔔
-ROLE_ID = "1531371818772861089"
-ROLE_MENTION = f"<@&{ROLE_ID}>"
-
-# Kontrola posledních 48 hodin
-LOOKBACK_HOURS = 48
-
-# 🧪 DOČASNÝ TEST
-TEST_MODE = True
-TEST_SONG = "afterlife"
-
 CLIENT_ID = os.environ["SPOTIFY_CLIENT_ID"]
 CLIENT_SECRET = os.environ["SPOTIFY_CLIENT_SECRET"]
+
+# =========================
+# NASTAVENÍ
+# =========================
+
+LOOKBACK_HOURS = 48
+
+# Nech TRUE pro jednorázový test Afterlife.
+# Po úspěšném testu změň na FALSE.
+TEST_MODE = True
+
+TEST_SONG = "afterlife"
+
+ROLE_MENTION = "<@&1531371818772861089>"
+
+# Verze GUID – díky tomu se test a následná ostrá verze
+# nepošlou MEE6 dvakrát.
+GUID_VERSION = "v2"
 
 
 def get_token():
@@ -31,442 +37,348 @@ def get_token():
         auth=(CLIENT_ID, CLIENT_SECRET),
         timeout=30,
     )
-
     response.raise_for_status()
-
     return response.json()["access_token"]
 
 
 def get_releases(token):
-    headers = {
-        "Authorization": f"Bearer {token}"
-    }
+    headers = {"Authorization": f"Bearer {token}"}
 
     releases = []
 
-    # Pouze singly
     url = (
         f"https://api.spotify.com/v1/artists/{ARTIST_ID}/albums"
-        "?include_groups=single&market=CZ&limit=10"
+        "?include_groups=single&market=CZ&limit=50"
     )
 
     while url and len(releases) < 50:
-
         response = requests.get(
             url,
             headers=headers,
-            timeout=30
+            timeout=30,
         )
-
         response.raise_for_status()
 
         data = response.json()
 
-        releases.extend(
-            data.get("items", [])
-        )
-
+        releases.extend(data.get("items", []))
         url = data.get("next")
 
+    unique = {}
 
-    # Odstranění duplicit
-    unique = {
-        item["id"]: item
-        for item in releases
-    }
+    for item in releases:
+        unique[item["id"]] = item
 
-    return sorted(
-        unique.values(),
-        key=lambda item: item.get(
-            "release_date",
-            "1900-01-01"
-        ),
-        reverse=True
-    )
+    return list(unique.values())
 
 
-def parse_release_date(item):
-
-    value = item.get(
-        "release_date",
-        ""
-    )
-
-    precision = item.get(
-        "release_date_precision",
-        "day"
-    )
+def parse_date(item):
+    value = item.get("release_date", "")
+    precision = item.get("release_date_precision", "day")
 
     try:
-
         if precision == "day":
-
             return datetime.strptime(
                 value,
-                "%Y-%m-%d"
-            ).replace(
-                tzinfo=timezone.utc
-            )
-
+                "%Y-%m-%d",
+            ).replace(tzinfo=timezone.utc)
 
         if precision == "month":
-
             return datetime.strptime(
                 value,
-                "%Y-%m"
-            ).replace(
-                tzinfo=timezone.utc
-            )
-
+                "%Y-%m",
+            ).replace(tzinfo=timezone.utc)
 
         return datetime.strptime(
             value,
-            "%Y"
-        ).replace(
-            tzinfo=timezone.utc
-        )
-
+            "%Y",
+        ).replace(tzinfo=timezone.utc)
 
     except ValueError:
-
-        return datetime(
-            1900,
-            1,
-            1,
-            tzinfo=timezone.utc
-        )
+        return datetime(1900, 1, 1, tzinfo=timezone.utc)
 
 
-def get_recent_releases(releases):
-
-    now = datetime.now(
-        timezone.utc
-    )
-
-    cutoff = (
-        now -
-        timedelta(
-            hours=LOOKBACK_HOURS
-        )
-    )
-
-    recent = []
-
-    for item in releases:
-
-        release_date = parse_release_date(
-            item
-        )
-
-        if release_date >= cutoff:
-
-            recent.append(item)
-
-    return recent
-
-
-def get_track_from_single(
-    token,
-    album_id
-):
-
+def get_track_from_single(token, album_id):
     headers = {
         "Authorization": f"Bearer {token}"
     }
 
     url = (
         f"https://api.spotify.com/v1/albums/"
-        f"{album_id}/tracks"
-        "?market=CZ&limit=1"
+        f"{album_id}/tracks?market=CZ&limit=1"
     )
 
     response = requests.get(
         url,
         headers=headers,
-        timeout=30
+        timeout=30,
     )
 
     response.raise_for_status()
 
-    tracks = response.json().get(
-        "items",
-        []
-    )
+    items = response.json().get("items", [])
 
-    if tracks:
+    if not items:
+        return None
 
-        return tracks[0]
-
-    return None
+    return items[0]
 
 
-def make_rss(
-    releases,
-    token
-):
+def make_rss(token, releases):
+
+    now = datetime.now(timezone.utc)
 
     rss = Element(
         "rss",
         {
             "version": "2.0",
-
-            "xmlns:atom":
-                "http://www.w3.org/2005/Atom",
-
-            "xmlns:content":
-                "http://purl.org/rss/1.0/modules/content/",
-
-            "xmlns:media":
-                "http://search.yahoo.com/mrss/",
+            "xmlns:atom": "http://www.w3.org/2005/Atom",
+            "xmlns:content": "http://purl.org/rss/1.0/modules/content/",
+            "xmlns:media": "http://search.yahoo.com/mrss/",
         },
     )
 
-
-    channel = SubElement(
-        rss,
-        "channel"
-    )
-
+    channel = SubElement(rss, "channel")
 
     SubElement(
         channel,
-        "title"
-    ).text = (
-        "Realita – nové skladby na Spotify"
-    )
-
+        "title",
+    ).text = "Realita – nové skladby na Spotify"
 
     SubElement(
         channel,
-        "link"
+        "link",
     ).text = ARTIST_URL
 
-
     SubElement(
         channel,
-        "description"
+        "description",
     ).text = (
         "Nové skladby interpreta Realita na Spotify."
     )
 
-
     SubElement(
         channel,
-        "language"
+        "language",
     ).text = "cs-CZ"
 
-
     SubElement(
         channel,
-        "ttl"
+        "ttl",
     ).text = "60"
 
+    found_test_song = False
+    items = []
 
-    for item in releases:
+    # ---------------------------------
+    # Běžné releasy za posledních 48 hodin
+    # ---------------------------------
+
+    for release in releases:
+
+        release_date = parse_date(release)
+
+        age_hours = (
+            now - release_date
+        ).total_seconds() / 3600
+
+        if age_hours <= LOOKBACK_HOURS:
+
+            track = get_track_from_single(
+                token,
+                release["id"],
+            )
+
+            if track:
+                items.append(
+                    (
+                        release,
+                        track,
+                    )
+                )
+
+                if (
+                    track["name"].lower()
+                    == TEST_SONG.lower()
+                ):
+                    found_test_song = True
+
+    # ---------------------------------
+    # TEST AFTERLIFE
+    # ---------------------------------
+
+    if TEST_MODE and not found_test_song:
+
+        for release in releases:
+
+            track = get_track_from_single(
+                token,
+                release["id"],
+            )
+
+            if not track:
+                continue
+
+            if (
+                track["name"].lower()
+                == TEST_SONG.lower()
+            ):
+
+                items.append(
+                    (
+                        release,
+                        track,
+                    )
+                )
+
+                break
+
+    # ---------------------------------
+    # Vytvoření RSS položek
+    # ---------------------------------
+
+    for release, track in items:
+
+        title = track.get(
+            "name",
+            release.get(
+                "name",
+                "Nový release",
+            ),
+        )
+
+        track_id = track["id"]
+
+        # ---------------------------------
+        # DŮLEŽITÉ:
+        # Tohle už NENÍ Spotify URL.
+        # Díky tomu by se neměl načítat Joe Rogan preview.
+        # ---------------------------------
+
+        go_url = (
+            "https://chrristtine.github.io/"
+            "spotify-realita-rss/go.html"
+            f"?track={track_id}"
+        )
+
+        # GUID zůstává stejný v testu i po vypnutí TEST_MODE
+        guid = (
+            f"spotify:track:{track_id}:"
+            f"{GUID_VERSION}"
+        )
 
         item_el = SubElement(
             channel,
-            "item"
+            "item",
         )
 
-
-        title = item.get(
-            "name",
-            "Nová skladba"
-        )
-
-
-        release_date = parse_release_date(
-            item
-        )
-
-
-        # Cover ze Spotify
-        image = ""
-
-        if item.get("images"):
-
-            image = item["images"][0].get(
-                "url",
-                ""
-            )
-
-
-        # Najdeme konkrétní skladbu
-        track = get_track_from_single(
-            token,
-            item["id"]
-        )
-
-
-        if track:
-
-            spotify_url = track[
-                "external_urls"
-            ]["spotify"]
-
-
-            title = track.get(
-                "name",
-                title
-            )
-
-
-            track_album = track.get(
-                "album",
-                {}
-            )
-
-
-            # Cover konkrétní skladby
-            if track_album.get("images"):
-
-                image = track_album[
-                    "images"
-                ][0].get(
-                    "url",
-                    image
-                )
-
-
-            # 🧪 TEST GUID
-            guid = (
-                f"spotify:track:"
-                f"{track['id']}:TEST"
-            )
-
-
-        else:
-
-            spotify_url = item[
-                "external_urls"
-            ]["spotify"]
-
-
-            guid = (
-                f"spotify:album:"
-                f"{item['id']}:TEST"
-            )
-
-
-        # Název
+        # Ping + hype přímo v TITLE
         SubElement(
             item_el,
-            "title"
-        ).text = title
+            "title",
+        ).text = (
+            f"{ROLE_MENTION} "
+            f"🔥 REALITA NAHRÁLA NOVÝ BANGER! "
+            f"🎵 {title}"
+        )
 
-
-        # Přímý odkaz na skladbu
+        # Už NENÍ Spotify URL
         SubElement(
             item_el,
-            "link"
-        ).text = spotify_url
+            "link",
+        ).text = go_url
 
-
-        # Jedinečné ID
         SubElement(
             item_el,
             "guid",
             {
                 "isPermaLink": "false"
-            }
+            },
         ).text = guid
 
-
-        # Datum vydání
         SubElement(
             item_el,
-            "pubDate"
+            "pubDate",
         ).text = format_datetime(
-            release_date
+            parse_date(release)
         )
 
+        # ---------------------------------
+        # COVER
+        # ---------------------------------
 
-        # Obsah pro MEE6
+        image = ""
+
+        if release.get("images"):
+            image = release["images"][0].get(
+                "url",
+                ""
+            )
+
+        # ---------------------------------
+        # TEXT
+        # ---------------------------------
+
         description = (
+            f'<p><strong>'
+            f'🔥 REALITA NAHRÁLA NOVÝ BANGER!'
+            f'</strong></p>'
 
-            f'<p>'
-            f'🎵 <strong>'
-            f'Nová skladba od Realita!'
-            f'</strong>'
-            f'</p>'
-
-            f'<p>'
-            f'<strong>'
+            f'<p>🎵 <strong>'
             f'{html.escape(title)}'
-            f'</strong>'
-            f'</p>'
+            f'</strong></p>'
+
+            f'<p>🏃💨 Utíkej si ho poslechnout!</p>'
 
             f'<p>'
-            f'{ROLE_MENTION}'
-            f'</p>'
-
-            f'<p>'
-            f'<a href="{html.escape(spotify_url)}">'
+            f'<a href="{html.escape(go_url)}">'
             f'🎧 Poslechnout na Spotify'
             f'</a>'
             f'</p>'
         )
 
-
-        # Cover
+        # Cover přidáme jako obrázek do RSS
         if image:
 
             description = (
-
                 f'<p>'
                 f'<img src="{html.escape(image)}" '
                 f'alt="{html.escape(title)}" />'
                 f'</p>'
-
-                +
-
-                description
+                + description
             )
 
+        SubElement(
+            item_el,
+            "description",
+        ).text = description
 
         SubElement(
             item_el,
-            "description"
+            "content:encoded",
         ).text = description
 
-
-        SubElement(
-            item_el,
-            "content:encoded"
-        ).text = description
-
-
-        # Media obrázek
+        # RSS media image
         if image:
 
-            media_content = SubElement(
+            SubElement(
                 item_el,
                 "media:content",
                 {
                     "url": image,
                     "type": "image/jpeg",
                     "medium": "image",
+                    "width": "640",
+                    "height": "640",
                 },
             )
 
-            media_content.set(
-                "width",
-                "640"
-            )
+    tree = ElementTree(rss)
 
-            media_content.set(
-                "height",
-                "640"
-            )
-
-
-    ElementTree(
-        rss
-    ).write(
+    tree.write(
         "rss.xml",
         encoding="utf-8",
-        xml_declaration=True
+        xml_declaration=True,
     )
 
 
@@ -474,63 +386,13 @@ if __name__ == "__main__":
 
     token = get_token()
 
-
-    # Všechny singly
-    all_releases = get_releases(
-        token
-    )
-
-
-    # Normální 48h výběr
-    recent_releases = get_recent_releases(
-        all_releases
-    )
-
-
-    # 🧪 TEST:
-    # Vynutíme afterlife v RSS,
-    # i když už není v posledních 48 hodinách.
-    if TEST_MODE:
-
-        for release in all_releases:
-
-            if (
-                release.get("name", "").lower()
-                == TEST_SONG.lower()
-            ):
-
-                if release not in recent_releases:
-
-                    recent_releases.insert(
-                        0,
-                        release
-                    )
-
-                break
-
-
-    print(
-        f"Spotify obsahuje "
-        f"{len(all_releases)} release(s)."
-    )
-
-
-    print(
-        f"Za posledních "
-        f"{LOOKBACK_HOURS} hodin: "
-        f"{len(recent_releases)} release(s)."
-    )
-
-
-    if TEST_MODE:
-
-        print(
-            f"🧪 TEST MODE: "
-            f"{TEST_SONG}"
-        )
-
+    releases = get_releases(token)
 
     make_rss(
-        recent_releases,
-        token
+        token,
+        releases,
+    )
+
+    print(
+        "RSS successfully generated."
     )
