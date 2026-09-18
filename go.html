@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+    <meta charset="UTF-8">
+
+    <title>Realita – Spotify</title>
+
+    <meta
+        name="robots"
+        content="noindex, nofollow"
+    >
+</head>
+
+<body>
+
+    <p>Otevírám Spotify… 🎵</p>
+
+    <script>
+        const params =
+            new URLSearchParams(
+                window.location.search
+            );
+
+        const track =
+            params.get("track");
+
+        if (
+            track &&
+            /^[A-Za-z0-9]{22}$/.test(track)
+        ) {
+
+            window.location.replace(
+                "https://open.spotify.com/track/"
+                + track
+            );
+
+        } else {
+
+            document.body.innerHTML =
+                "<p>Neplatný odkaz.</p>";
+        }
+    </script>
+
+</body>
+</html>
